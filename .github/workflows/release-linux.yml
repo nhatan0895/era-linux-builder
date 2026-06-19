@@ -1,0 +1,129 @@
+name: Release ERA PI Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload to era-releases (e.g. v0.1.17)"
+        required: true
+        default: "v0.1.17"
+      ref:
+        description: "Source ref in nhatan0895/era (branch, tag, or SHA)"
+        required: true
+        default: "otna/cloud-mvp"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: era-linux-release-${{ inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Build Linux x64 AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout private ERA source
+        uses: actions/checkout@v4
+        with:
+          repository: nhatan0895/era
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.ERA_SOURCE_TOKEN }}
+          path: era
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: |
+            era/era-app/pnpm-lock.yaml
+            era/era-pi-local/pnpm-lock.yaml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            pkg-config
+
+      - name: Install JS dependencies
+        working-directory: era/era-pi-local
+        run: pnpm install --frozen-lockfile
+
+      - name: Build EraPi sidecar
+        working-directory: era/era-pi-local
+        run: bash scripts/bundle-sidecar.sh --release
+
+      - name: Build Tauri Linux bundle
+        working-directory: era/era-pi-local
+        env:
+          CI: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm tauri build
+
+      - name: Stage stable public assets
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="era/era-pi-local/src-tauri/target/release/bundle"
+          DIST="$RUNNER_TEMP/era-linux-dist"
+          mkdir -p "$DIST"
+          appimage="$(find "$BUNDLE" -type f -name '*.AppImage' | head -1)"
+          deb="$(find "$BUNDLE" -type f -name '*_amd64.deb' | head -1 || true)"
+          if [ -z "$appimage" ]; then
+            echo "::error title=Missing AppImage::No .AppImage found under $BUNDLE"
+            find "$BUNDLE" -maxdepth 4 -type f -print || true
+            exit 1
+          fi
+          cp "$appimage" "$DIST/ERA-PI_amd64.AppImage"
+          if [ -n "$deb" ]; then cp "$deb" "$DIST/ERA-PI_amd64.deb"; fi
+          echo "dist=$DIST" >> "$GITHUB_OUTPUT"
+          ls -lh "$DIST"
+
+      - name: Upload to public era-releases
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: nhatan0895/era-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+          tag_name: ${{ inputs.tag }}
+          name: ERA PI Desktop ${{ inputs.tag }}
+          body: |
+            ERA PI Linux desktop build.
+
+            Stable assets:
+            - ERA-PI_amd64.AppImage
+            - ERA-PI_amd64.deb (when produced)
+          prerelease: true
+          files: |
+            ${{ steps.stage.outputs.dist }}/ERA-PI_amd64.AppImage
+            ${{ steps.stage.outputs.dist }}/ERA-PI_amd64.deb
+          fail_on_unmatched_files: false
+
+      - name: Summary
+        run: |
+          echo "Linux assets:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- https://github.com/nhatan0895/era-releases/releases/download/${{ inputs.tag }}/ERA-PI_amd64.AppImage" >> "$GITHUB_STEP_SUMMARY"
+          echo "- https://github.com/nhatan0895/era-releases/releases/download/${{ inputs.tag }}/ERA-PI_amd64.deb" >> "$GITHUB_STEP_SUMMARY"
