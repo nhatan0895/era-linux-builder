@@ -59,6 +59,10 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
+            libappindicator3-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
             librsvg2-dev \
             patchelf \
             build-essential \
@@ -68,13 +72,41 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - name: Install JS dependencies
+      - name: Install era-app deps
+        working-directory: era/era-app
+        run: pnpm install --frozen-lockfile
+
+      - name: Install era-pi-local deps
         working-directory: era/era-pi-local
         run: pnpm install --frozen-lockfile
 
       - name: Build EraPi sidecar
         working-directory: era/era-pi-local
         run: bash scripts/bundle-sidecar.sh --release
+
+      - name: Setup Python for bundled embedding model
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache bundled embedding model
+        uses: actions/cache@v4
+        with:
+          path: era/era-pi-local/src-tauri/resources/era-embed
+          key: era-embed-multilingual-e5-small-int8-v1
+
+      - name: Prepare bundled embedding model
+        working-directory: era/era-pi-local
+        run: |
+          python -m pip install --quiet --disable-pip-version-check onnxruntime onnx huggingface_hub
+          python scripts/prepare-embed-model.py
+
+      - name: Install uv for bundled SearXNG
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build bundled SearXNG sidecar
+        working-directory: era/era-pi-local
+        run: bash scripts/bundle-searxng.sh
 
       - name: Build Tauri Linux bundle
         working-directory: era/era-pi-local
